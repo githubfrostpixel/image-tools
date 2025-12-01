@@ -18,6 +18,13 @@ class OperatorRegistry:
     and makes them available for use in the application.
     """
     
+    # Define operator display order
+    OPERATOR_ORDER = [
+        "Downscale",
+        "Add Border",
+        "Color Quantize"
+    ]
+    
     def __init__(self):
         self._operators: Dict[str, OperatorBase] = {}
         self._discover_operators()
@@ -61,12 +68,23 @@ class OperatorRegistry:
     
     def get_operators(self) -> List[OperatorBase]:
         """
-        Get list of all registered operators.
+        Get list of all registered operators, sorted by display order.
         
         Returns:
-            List of operator instances
+            List of operator instances in the specified order
         """
-        return list(self._operators.values())
+        operators = list(self._operators.values())
+        
+        # Sort operators by predefined order
+        def sort_key(op: OperatorBase) -> int:
+            try:
+                return self.OPERATOR_ORDER.index(op.name)
+            except ValueError:
+                # Operators not in the order list go to the end
+                return len(self.OPERATOR_ORDER)
+        
+        operators.sort(key=sort_key)
+        return operators
     
     def get_operator(self, name: str) -> Optional[OperatorBase]:
         """

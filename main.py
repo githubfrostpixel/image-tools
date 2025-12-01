@@ -13,6 +13,7 @@ if str(project_root) not in sys.path:
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QIcon
 
 from ui.main_window import MainWindow
 
@@ -27,6 +28,11 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Image Processing Tool")
     app.setOrganizationName("ImageTool")
+    
+    # Set application icon
+    icon_path = project_root / "favicon.ico"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
     
     # Create and show main window
     window = MainWindow()

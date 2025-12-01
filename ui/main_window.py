@@ -2,11 +2,13 @@
 Main Window - Primary application window with 2-column layout
 """
 import numpy as np
+from pathlib import Path
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QTabWidget, QMessageBox
 )
 from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QIcon
 
 from core.config_manager import ConfigManager
 from core.image_processor import ImageProcessor
@@ -48,6 +50,11 @@ class MainWindow(QMainWindow):
         """Initialize the UI"""
         self.setWindowTitle("Image Processing Tool")
         self.setMinimumSize(800, 600)
+        
+        # Set window icon
+        icon_path = Path(__file__).parent.parent / "favicon.ico"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
         
         # Central widget
         central = QWidget()

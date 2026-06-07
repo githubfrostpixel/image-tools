@@ -22,7 +22,8 @@ class OperatorRegistry:
     OPERATOR_ORDER = [
         "Downscale",
         "Add Border",
-        "Color Quantize"
+        "Color Quantize",
+        "Pixel Snapper"
     ]
     
     def __init__(self):

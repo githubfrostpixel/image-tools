@@ -4,7 +4,6 @@ Pixel Snapper Operator - Snap messy pixel art to a perfect grid
 from dataclasses import replace
 from typing import Callable, Optional
 
-import cv2
 import numpy as np
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -18,7 +17,7 @@ from core.pixel_snapper_algo import SnapperConfig, process_pixel_snap
 
 
 class PixelSnapperOperator(OperatorBase):
-    """Snap pixels to a detected grid with optional quantization."""
+    """Snap pixels to a detected grid."""
 
     OUTPUT_DOWNSAMPLE = "Downsample to grid"
     OUTPUT_INPLACE = "Snap in place"
@@ -29,10 +28,8 @@ class PixelSnapperOperator(OperatorBase):
         self._source_width = 0
         self._source_height = 0
 
+        self._snapping_check: Optional[QCheckBox] = None
         self._pixel_size_spin: Optional[QSpinBox] = None
-        self._quantize_check: Optional[QCheckBox] = None
-        self._num_colors_spin: Optional[QSpinBox] = None
-        self._iterations_spin: Optional[QSpinBox] = None
         self._output_mode_combo: Optional[QComboBox] = None
         self._upscale_spin: Optional[QSpinBox] = None
 
@@ -62,6 +59,12 @@ class PixelSnapperOperator(OperatorBase):
         grid_group = QGroupBox("Grid Detection")
         grid_layout = QVBoxLayout(grid_group)
 
+        self._snapping_check = QCheckBox("Enable grid snapping")
+        self._snapping_check.setChecked(True)
+        self._snapping_check.setToolTip("Snap pixels to a detected grid.")
+        self._snapping_check.stateChanged.connect(self._on_snapping_changed)
+        grid_layout.addWidget(self._snapping_check)
+
         pixel_layout = QHBoxLayout()
         pixel_label = QLabel("Pixel size:")
         pixel_label.setFixedWidth(70)
@@ -79,42 +82,6 @@ class PixelSnapperOperator(OperatorBase):
         grid_layout.addLayout(pixel_layout)
 
         layout.addWidget(grid_group)
-
-        quant_group = QGroupBox("Quantization")
-        quant_layout = QVBoxLayout(quant_group)
-
-        self._quantize_check = QCheckBox("Quantize before detect")
-        self._quantize_check.setChecked(True)
-        self._quantize_check.setToolTip(
-            "Reduce colors before grid detection.\n"
-            "Matches the Rust Pixel Snapper pipeline."
-        )
-        self._quantize_check.stateChanged.connect(self._on_quantize_changed)
-        quant_layout.addWidget(self._quantize_check)
-
-        colors_layout = QHBoxLayout()
-        colors_label = QLabel("Colors:")
-        colors_label.setFixedWidth(70)
-        self._num_colors_spin = QSpinBox()
-        self._num_colors_spin.setRange(2, 256)
-        self._num_colors_spin.setValue(16)
-        self._num_colors_spin.valueChanged.connect(self._on_option_changed)
-        colors_layout.addWidget(colors_label)
-        colors_layout.addWidget(self._num_colors_spin, 1)
-        quant_layout.addLayout(colors_layout)
-
-        iter_layout = QHBoxLayout()
-        iter_label = QLabel("Iterations:")
-        iter_label.setFixedWidth(70)
-        self._iterations_spin = QSpinBox()
-        self._iterations_spin.setRange(1, 50)
-        self._iterations_spin.setValue(15)
-        self._iterations_spin.valueChanged.connect(self._on_option_changed)
-        iter_layout.addWidget(iter_label)
-        iter_layout.addWidget(self._iterations_spin, 1)
-        quant_layout.addLayout(iter_layout)
-
-        layout.addWidget(quant_group)
 
         output_group = QGroupBox("Output")
         output_layout = QVBoxLayout(output_group)
@@ -216,18 +183,26 @@ class PixelSnapperOperator(OperatorBase):
         layout.addLayout(row)
         return spin
 
-    def _on_quantize_changed(self, state: int):
-        enabled = state == Qt.CheckState.Checked.value
-        if self._num_colors_spin:
-            self._num_colors_spin.setEnabled(enabled)
-        if self._iterations_spin:
-            self._iterations_spin.setEnabled(enabled)
+    def _is_snapping_enabled(self) -> bool:
+        return self._snapping_check.isChecked() if self._snapping_check else True
+
+    def _update_grid_dependent_controls(self) -> None:
+        snapping = self._is_snapping_enabled()
+        if self._pixel_size_spin:
+            self._pixel_size_spin.setEnabled(snapping)
+        if self._output_mode_combo:
+            self._output_mode_combo.setEnabled(snapping)
+        if self._upscale_spin:
+            self._upscale_spin.setEnabled(snapping and self._is_downsample_mode())
+        if self._advanced_group:
+            self._advanced_group.setEnabled(snapping)
+
+    def _on_snapping_changed(self, _state: int) -> None:
+        self._update_grid_dependent_controls()
         self._notify_change()
 
     def _on_output_mode_changed(self, _index: int):
-        downsample = self._is_downsample_mode()
-        if self._upscale_spin:
-            self._upscale_spin.setEnabled(downsample)
+        self._update_grid_dependent_controls()
         self._notify_change()
 
     def _is_downsample_mode(self) -> bool:
@@ -247,11 +222,8 @@ class PixelSnapperOperator(OperatorBase):
         pixel_override = None if pixel_size == 0 else float(pixel_size)
 
         config = SnapperConfig(
-            k_colors=self._num_colors_spin.value() if self._num_colors_spin else 16,
-            max_kmeans_iterations=self._iterations_spin.value() if self._iterations_spin else 15,
-            quantize_before_detect=(
-                self._quantize_check.isChecked() if self._quantize_check else True
-            ),
+            quantize_before_detect=False,
+            enable_snapping=self._is_snapping_enabled(),
             pixel_size_override=pixel_override,
         )
 
@@ -299,10 +271,8 @@ class PixelSnapperOperator(OperatorBase):
         self._callback = callback
 
     def save_settings(self, config: ConfigManager) -> None:
+        self._save_check(config, "enable_snapping", self._snapping_check)
         self._save_spin(config, "pixel_size", self._pixel_size_spin)
-        self._save_check(config, "quantize", self._quantize_check)
-        self._save_spin(config, "num_colors", self._num_colors_spin)
-        self._save_spin(config, "iterations", self._iterations_spin)
         self._save_combo(config, "output_mode", self._output_mode_combo)
         self._save_spin(config, "upscale", self._upscale_spin)
         self._save_check(config, "advanced_enabled", self._advanced_group, is_group=True)
@@ -318,10 +288,8 @@ class PixelSnapperOperator(OperatorBase):
     def load_settings(self, config: ConfigManager) -> None:
         self.get_widget()
 
+        self._load_check(config, "enable_snapping", self._snapping_check, True)
         self._load_spin(config, "pixel_size", self._pixel_size_spin, 0)
-        self._load_check(config, "quantize", self._quantize_check, True)
-        self._load_spin(config, "num_colors", self._num_colors_spin, 16)
-        self._load_spin(config, "iterations", self._iterations_spin, 15)
         self._load_combo(config, "output_mode", self._output_mode_combo, self.OUTPUT_DOWNSAMPLE)
         self._load_spin(config, "upscale", self._upscale_spin, 1)
 
@@ -340,22 +308,18 @@ class PixelSnapperOperator(OperatorBase):
         self._load_spin(config, "fallback_segments", self._fallback_segments_spin, 64)
         self._load_double(config, "max_step_ratio", self._max_step_ratio_spin, 1.8)
 
-        self._on_quantize_changed(
+        self._on_snapping_changed(
             Qt.CheckState.Checked.value
-            if self._quantize_check and self._quantize_check.isChecked()
+            if self._snapping_check and self._snapping_check.isChecked()
             else Qt.CheckState.Unchecked.value
         )
         self._on_output_mode_changed(self._output_mode_combo.currentIndex())
 
     def reset_to_defaults(self) -> None:
+        if self._snapping_check:
+            self._snapping_check.setChecked(True)
         if self._pixel_size_spin:
             self._pixel_size_spin.setValue(0)
-        if self._quantize_check:
-            self._quantize_check.setChecked(True)
-        if self._num_colors_spin:
-            self._num_colors_spin.setValue(16)
-        if self._iterations_spin:
-            self._iterations_spin.setValue(15)
         if self._output_mode_combo:
             self._output_mode_combo.setCurrentText(self.OUTPUT_DOWNSAMPLE)
         if self._upscale_spin:
@@ -378,6 +342,7 @@ class PixelSnapperOperator(OperatorBase):
             self._fallback_segments_spin.setValue(64)
         if self._max_step_ratio_spin:
             self._max_step_ratio_spin.setValue(1.8)
+        self._update_grid_dependent_controls()
 
     def _save_spin(self, config: ConfigManager, key: str, spin: Optional[QSpinBox]) -> None:
         if spin:

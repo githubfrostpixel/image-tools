@@ -1,11 +1,11 @@
 """
-Main Window - Primary application window with 2-column layout
+Main Window - Primary application window with 3-row layout
 """
 import numpy as np
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QSplitter, QTabWidget, QMessageBox
+    QSplitter, QTabWidget, QScrollArea, QPushButton, QMessageBox
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
@@ -24,8 +24,9 @@ class MainWindow(QMainWindow):
     Main application window.
     
     Layout:
-    - Column 1: File input, operator tabs, export controls
-    - Column 2: Original image viewer (top), processed image viewer (bottom)
+    - Row 1: Input image zone (left), format + save (right)
+    - Row 2: Original viewer (left), Processed viewer (right)
+    - Row 3: Operator function tabs
     """
     
     def __init__(self):
@@ -60,71 +61,58 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         
-        # Main layout with splitter
-        main_layout = QHBoxLayout(central)
+        main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(4, 4, 4, 4)
         main_layout.setSpacing(4)
         
-        self._splitter = QSplitter(Qt.Orientation.Horizontal)
-        main_layout.addWidget(self._splitter)
+        # ============== Row 1: Input + Export ==============
+        toolbar_widget = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar_widget)
+        toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        toolbar_layout.setSpacing(8)
         
-        # ============== Column 1: Controls ==============
-        controls_widget = QWidget()
-        controls_layout = QVBoxLayout(controls_widget)
-        controls_layout.setContentsMargins(0, 0, 0, 0)
-        controls_layout.setSpacing(8)
-        
-        # File input
-        self._file_input = FileInputWidget()
+        self._file_input = FileInputWidget(compact=True)
         self._file_input.file_selected.connect(self._on_file_selected)
-        controls_layout.addWidget(self._file_input)
+        toolbar_layout.addWidget(self._file_input, 1)
+
+        self._use_as_input_btn = QPushButton("Use as Input")
+        self._use_as_input_btn.setToolTip("Copy the processed image into the original input")
+        self._use_as_input_btn.clicked.connect(self._on_use_as_input)
+        self._use_as_input_btn.setEnabled(False)
+        toolbar_layout.addWidget(self._use_as_input_btn)
         
-        # Operator tabs
-        self._operator_tabs = QTabWidget()
-        self._operator_tabs.currentChanged.connect(self._on_operator_changed)
-        
-        # Add operators to tabs
-        operators = self._registry.get_operators()
-        for operator in operators:
-            widget = operator.get_widget()
-            self._operator_tabs.addTab(widget, operator.name)
-        
-        controls_layout.addWidget(self._operator_tabs, 1)
-        
-        # Export widget
-        self._export_widget = ExportWidget()
+        self._export_widget = ExportWidget(compact=True)
         self._export_widget.export_requested.connect(self._on_export_requested)
-        controls_layout.addWidget(self._export_widget)
+        toolbar_layout.addWidget(self._export_widget)
         
-        self._splitter.addWidget(controls_widget)
+        main_layout.addWidget(toolbar_widget)
         
-        # ============== Column 2: Image Viewers ==============
-        viewers_widget = QWidget()
-        viewers_layout = QVBoxLayout(viewers_widget)
-        viewers_layout.setContentsMargins(0, 0, 0, 0)
-        viewers_layout.setSpacing(4)
+        # ============== Row 2: Viewers (stretch to fill) ==============
+        self._viewer_splitter = QSplitter(Qt.Orientation.Horizontal)
         
-        # Vertical splitter for viewers
-        self._viewer_splitter = QSplitter(Qt.Orientation.Vertical)
-        
-        # Original image viewer
         self._original_viewer = ImageViewer("Original")
         self._viewer_splitter.addWidget(self._original_viewer)
         
-        # Processed image viewer
         self._processed_viewer = ImageViewer("Processed")
         self._viewer_splitter.addWidget(self._processed_viewer)
         
-        viewers_layout.addWidget(self._viewer_splitter)
-        self._splitter.addWidget(viewers_widget)
+        self._viewer_splitter.setSizes([400, 400])
+        main_layout.addWidget(self._viewer_splitter, 1)
         
-        # Set splitter proportions
-        self._splitter.setSizes([250, 550])
-        self._splitter.setStretchFactor(0, 0)  # Controls don't stretch
-        self._splitter.setStretchFactor(1, 1)  # Viewers stretch
+        # ============== Row 3: Operator tabs (fixed height, scrollable content) ==============
+        self._operator_tabs = QTabWidget()
+        self._operator_tabs.setFixedHeight(300)
+        self._operator_tabs.currentChanged.connect(self._on_operator_changed)
         
-        # Set viewer splitter to equal sizes
-        self._viewer_splitter.setSizes([300, 300])
+        operators = self._registry.get_operators()
+        for operator in operators:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll.setWidget(operator.get_widget())
+            self._operator_tabs.addTab(scroll, operator.name)
+        
+        main_layout.addWidget(self._operator_tabs, 0)
         
         # Set current operator
         if operators:
@@ -142,10 +130,10 @@ class MainWindow(QMainWindow):
         if geometry:
             self.restoreGeometry(geometry)
         
-        # Splitter state
-        splitter_state = self._config.load_splitter_state()
-        if splitter_state:
-            self._splitter.restoreState(splitter_state)
+        # Viewer splitter state
+        viewer_splitter_state = self._config.load_viewer_splitter_state()
+        if viewer_splitter_state:
+            self._viewer_splitter.restoreState(viewer_splitter_state)
         
         # File paths
         last_input_dir = self._config.load_last_input_dir()
@@ -178,8 +166,8 @@ class MainWindow(QMainWindow):
         # Window geometry
         self._config.save_window_geometry(self.saveGeometry())
         
-        # Splitter state
-        self._config.save_splitter_state(self._splitter.saveState())
+        # Viewer splitter state
+        self._config.save_viewer_splitter_state(self._viewer_splitter.saveState())
         
         # File paths
         self._config.save_last_input_dir(self._file_input.get_last_directory())
@@ -198,6 +186,25 @@ class MainWindow(QMainWindow):
         
         self._config.sync()
     
+    def _set_output_actions_enabled(self, enabled: bool):
+        """Enable or disable actions that require a processed image"""
+        self._export_widget.set_enabled(enabled)
+        self._use_as_input_btn.setEnabled(enabled)
+
+    def _on_use_as_input(self):
+        """Copy processed image into original input for chaining operators"""
+        if self._processed_image is None:
+            return
+
+        self._original_image = self._processed_image.copy()
+        self._original_viewer.set_image(self._original_image)
+
+        width, height = ImageProcessor.get_image_dimensions(self._original_image)
+        for operator in self._registry.get_operators():
+            operator.set_source_dimensions(width, height)
+
+        self._schedule_process()
+
     def _on_file_selected(self, file_path: str):
         """Handle file selection"""
         image = ImageProcessor.load_image(file_path)
@@ -236,7 +243,7 @@ class MainWindow(QMainWindow):
         if self._original_image is None or self._current_operator is None:
             self._processed_image = None
             self._processed_viewer.clear()
-            self._export_widget.set_enabled(False)
+            self._set_output_actions_enabled(False)
             return
         
         try:
@@ -244,15 +251,15 @@ class MainWindow(QMainWindow):
             
             if self._processed_image is not None:
                 self._processed_viewer.set_image(self._processed_image)
-                self._export_widget.set_enabled(True)
+                self._set_output_actions_enabled(True)
             else:
                 self._processed_viewer.clear()
-                self._export_widget.set_enabled(False)
+                self._set_output_actions_enabled(False)
                 
         except Exception as e:
             print(f"Processing error: {e}")
             self._processed_viewer.clear()
-            self._export_widget.set_enabled(False)
+            self._set_output_actions_enabled(False)
     
     def _on_export_requested(self, file_path: str, format_ext: str):
         """Handle export request"""
@@ -271,4 +278,3 @@ class MainWindow(QMainWindow):
         """Handle window close"""
         self._save_settings()
         event.accept()
-

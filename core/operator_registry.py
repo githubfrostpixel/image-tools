@@ -23,6 +23,7 @@ class OperatorRegistry:
         "Downscale",
         "Add Border",
         "Color Quantize",
+        "Dither",
         "Pixel Snapper"
     ]
     

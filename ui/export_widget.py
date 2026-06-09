@@ -28,8 +28,9 @@ class ExportWidget(QWidget):
     # Available export formats
     FORMATS = ["PNG", "JPG", "BMP", "TIFF", "WEBP"]
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, compact: bool = False):
         super().__init__(parent)
+        self._compact = compact
         self._last_directory = ""
         self._source_filename = ""
         
@@ -37,13 +38,14 @@ class ExportWidget(QWidget):
     
     def _setup_ui(self):
         """Initialize the UI"""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        
-        # Format selection
-        format_layout = QHBoxLayout()
-        format_layout.setSpacing(4)
+        if self._compact:
+            layout = QHBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(8)
+        else:
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(4)
         
         format_label = QLabel("Format:")
         format_label.setFixedWidth(50)
@@ -51,14 +53,10 @@ class ExportWidget(QWidget):
         self._format_combo = QComboBox()
         self._format_combo.addItems(self.FORMATS)
         self._format_combo.setCurrentText("PNG")
+        if self._compact:
+            self._format_combo.setFixedWidth(80)
         
-        format_layout.addWidget(format_label)
-        format_layout.addWidget(self._format_combo, 1)
-        
-        layout.addLayout(format_layout)
-        
-        # Export button
-        self._export_btn = QPushButton("Export Image")
+        self._export_btn = QPushButton("Save" if self._compact else "Export Image")
         self._export_btn.setStyleSheet("""
             QPushButton {
                 background-color: #4CAF50;
@@ -82,7 +80,17 @@ class ExportWidget(QWidget):
         self._export_btn.clicked.connect(self._on_export_clicked)
         self._export_btn.setEnabled(False)
         
-        layout.addWidget(self._export_btn)
+        if self._compact:
+            layout.addWidget(format_label)
+            layout.addWidget(self._format_combo)
+            layout.addWidget(self._export_btn)
+        else:
+            format_layout = QHBoxLayout()
+            format_layout.setSpacing(4)
+            format_layout.addWidget(format_label)
+            format_layout.addWidget(self._format_combo, 1)
+            layout.addLayout(format_layout)
+            layout.addWidget(self._export_btn)
     
     def _on_export_clicked(self):
         """Handle export button click"""

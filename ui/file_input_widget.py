@@ -3,7 +3,7 @@ File Input Widget - Browse button with drag-and-drop support
 """
 from pathlib import Path
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QPushButton, QLabel, QFileDialog
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFileDialog
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent
@@ -21,8 +21,9 @@ class FileInputWidget(QWidget):
     
     file_selected = pyqtSignal(str)
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, compact: bool = False):
         super().__init__(parent)
+        self._compact = compact
         self._last_directory = ""
         self._current_file = ""
         
@@ -30,12 +31,17 @@ class FileInputWidget(QWidget):
     
     def _setup_ui(self):
         """Initialize the UI"""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        if self._compact:
+            layout = QHBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(8)
+        else:
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(4)
         
         # Drop zone / browse button
-        self._drop_zone = DropZoneButton()
+        self._drop_zone = DropZoneButton(compact=self._compact)
         self._drop_zone.clicked.connect(self._browse_file)
         self._drop_zone.file_dropped.connect(self._on_file_dropped)
         layout.addWidget(self._drop_zone)
@@ -43,9 +49,15 @@ class FileInputWidget(QWidget):
         # File name label
         self._file_label = QLabel("No file selected")
         self._file_label.setStyleSheet("color: #666; font-size: 10px;")
-        self._file_label.setWordWrap(True)
-        self._file_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self._file_label)
+        self._file_label.setWordWrap(not self._compact)
+        if self._compact:
+            self._file_label.setAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
+            layout.addWidget(self._file_label, 1)
+        else:
+            self._file_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(self._file_label)
     
     def _browse_file(self):
         """Open file browser dialog"""
@@ -105,28 +117,18 @@ class DropZoneButton(QPushButton):
     
     file_dropped = pyqtSignal(str)
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, compact: bool = False):
         super().__init__(parent)
-        self.setText("Browse Image\n\nDrag & Drop Here")
+        self._compact = compact
+        if compact:
+            self.setText("Browse Image")
+            self.setMinimumHeight(32)
+            self.setMaximumHeight(32)
+        else:
+            self.setText("Browse Image\n\nDrag & Drop Here")
+            self.setMinimumHeight(80)
         self.setAcceptDrops(True)
-        self.setMinimumHeight(80)
-        self.setStyleSheet("""
-            QPushButton {
-                border: 2px dashed #888;
-                border-radius: 8px;
-                background-color: #f5f5f5;
-                color: #555;
-                font-size: 12px;
-                padding: 10px;
-            }
-            QPushButton:hover {
-                border-color: #555;
-                background-color: #eee;
-            }
-            QPushButton:pressed {
-                background-color: #ddd;
-            }
-        """)
+        self._reset_style()
     
     def dragEnterEvent(self, event: QDragEnterEvent):
         """Handle drag enter"""
@@ -136,16 +138,7 @@ class DropZoneButton(QPushButton):
                 file_path = urls[0].toLocalFile()
                 if Path(file_path).suffix.lower() in ImageProcessor.SUPPORTED_FORMATS:
                     event.acceptProposedAction()
-                    self.setStyleSheet("""
-                        QPushButton {
-                            border: 2px dashed #4CAF50;
-                            border-radius: 8px;
-                            background-color: #e8f5e9;
-                            color: #555;
-                            font-size: 12px;
-                            padding: 10px;
-                        }
-                    """)
+                    self._set_drag_style()
                     return
         event.ignore()
     
@@ -167,23 +160,67 @@ class DropZoneButton(QPushButton):
                     return
         event.ignore()
     
+    def _set_drag_style(self):
+        """Apply drag-over highlight style"""
+        if self._compact:
+            self.setStyleSheet("""
+                QPushButton {
+                    border: 2px dashed #4CAF50;
+                    border-radius: 4px;
+                    background-color: #e8f5e9;
+                    color: #555;
+                    font-size: 11px;
+                    padding: 4px 12px;
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                QPushButton {
+                    border: 2px dashed #4CAF50;
+                    border-radius: 8px;
+                    background-color: #e8f5e9;
+                    color: #555;
+                    font-size: 12px;
+                    padding: 10px;
+                }
+            """)
+    
     def _reset_style(self):
         """Reset to default style"""
-        self.setStyleSheet("""
-            QPushButton {
-                border: 2px dashed #888;
-                border-radius: 8px;
-                background-color: #f5f5f5;
-                color: #555;
-                font-size: 12px;
-                padding: 10px;
-            }
-            QPushButton:hover {
-                border-color: #555;
-                background-color: #eee;
-            }
-            QPushButton:pressed {
-                background-color: #ddd;
-            }
-        """)
+        if self._compact:
+            self.setStyleSheet("""
+                QPushButton {
+                    border: 2px dashed #888;
+                    border-radius: 4px;
+                    background-color: #f5f5f5;
+                    color: #555;
+                    font-size: 11px;
+                    padding: 4px 12px;
+                }
+                QPushButton:hover {
+                    border-color: #555;
+                    background-color: #eee;
+                }
+                QPushButton:pressed {
+                    background-color: #ddd;
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                QPushButton {
+                    border: 2px dashed #888;
+                    border-radius: 8px;
+                    background-color: #f5f5f5;
+                    color: #555;
+                    font-size: 12px;
+                    padding: 10px;
+                }
+                QPushButton:hover {
+                    border-color: #555;
+                    background-color: #eee;
+                }
+                QPushButton:pressed {
+                    background-color: #ddd;
+                }
+            """)
 

@@ -10,6 +10,14 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 
+COLOR_SPACE_RGB = "RGB"
+COLOR_SPACE_LAB = "LAB"
+COLOR_SPACE_HSV = "HSV"
+VALID_COLOR_SPACES = (COLOR_SPACE_RGB, COLOR_SPACE_LAB, COLOR_SPACE_HSV)
+
+# Scales hue onto the unit circle with comparable magnitude to S/V channels.
+HUE_CIRCLE_RADIUS = 90.0
+
 
 @dataclass
 class SnapperConfig:
@@ -26,58 +34,208 @@ class SnapperConfig:
     max_step_ratio: float = 1.8
     pixel_size_override: Optional[float] = None
     quantize_before_detect: bool = True
+    enable_snapping: bool = True
+    color_space: str = COLOR_SPACE_RGB
+    channel_weights: Tuple[float, float, float] = (1.0, 1.0, 1.0)
 
 
-def quantize_rgb(image: np.ndarray, config: SnapperConfig) -> np.ndarray:
-    """Reduce opaque pixels to k_colors using K-means in RGB space."""
-    if config.k_colors <= 0:
-        return image.copy()
+def _normalize_weights(weights: Tuple[float, float, float]) -> Tuple[float, float, float]:
+    total = weights[0] + weights[1] + weights[2]
+    if total <= 0:
+        return (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)
+    return (weights[0] / total, weights[1] / total, weights[2] / total)
 
-    has_alpha = image.shape[2] == 4
-    bgr = image[:, :, :3]
-    alpha = image[:, :, 3] if has_alpha else None
 
-    opaque_mask = np.ones(bgr.shape[:2], dtype=bool) if alpha is None else alpha > 0
-    opaque_pixels = bgr[opaque_mask].astype(np.float32)
+def _resolve_color_space(space: str) -> str:
+    upper = (space or COLOR_SPACE_RGB).upper()
+    if upper in VALID_COLOR_SPACES:
+        return upper
+    return COLOR_SPACE_RGB
 
-    if len(opaque_pixels) == 0:
-        return image.copy()
 
-    k = min(config.k_colors, len(opaque_pixels))
+def bgr_pixels_to_space(bgr_pixels: np.ndarray, space: str) -> np.ndarray:
+    """Convert Nx3 BGR pixels to the target color space."""
+    space = _resolve_color_space(space)
+    if space == COLOR_SPACE_RGB:
+        return bgr_pixels.astype(np.float32)
+
+    reshaped = bgr_pixels.astype(np.uint8).reshape(-1, 1, 3)
+    if space == COLOR_SPACE_LAB:
+        converted = cv2.cvtColor(reshaped, cv2.COLOR_BGR2LAB)
+    else:
+        converted = cv2.cvtColor(reshaped, cv2.COLOR_BGR2HSV)
+    return converted.reshape(-1, 3).astype(np.float32)
+
+
+def space_pixel_to_bgr(pixel: np.ndarray, space: str) -> np.ndarray:
+    """Convert a single pixel from native space back to BGR."""
+    space = _resolve_color_space(space)
+    if space == COLOR_SPACE_RGB:
+        return np.clip(pixel, 0, 255).astype(np.uint8)
+
+    if space == COLOR_SPACE_LAB:
+        arr = np.clip(pixel, 0, 255).astype(np.uint8).reshape(1, 1, 3)
+        return cv2.cvtColor(arr, cv2.COLOR_LAB2BGR)[0, 0]
+
+    hsv = pixel.astype(np.float32).copy()
+    hsv[0] = np.clip(hsv[0], 0, 179)
+    hsv[1:] = np.clip(hsv[1:], 0, 255)
+    arr = hsv.astype(np.uint8).reshape(1, 1, 3)
+    return cv2.cvtColor(arr, cv2.COLOR_HSV2BGR)[0, 0]
+
+
+def palette_native_to_bgr(palette: np.ndarray, space: str) -> np.ndarray:
+    return np.array([space_pixel_to_bgr(p, space) for p in palette], dtype=np.uint8)
+
+
+def bgr_to_features(
+    bgr_pixels: np.ndarray, space: str, weights: Tuple[float, float, float]
+) -> np.ndarray:
+    """Convert BGR pixels to weighted feature vectors for palette distance."""
+    native_pixels = bgr_pixels_to_space(bgr_pixels, space)
+    return _build_cluster_features(native_pixels, space, weights)
+
+
+def _build_cluster_features(
+    native_pixels: np.ndarray, space: str, weights: Tuple[float, float, float]
+) -> np.ndarray:
+    w0, w1, w2 = _normalize_weights(weights)
+    space = _resolve_color_space(space)
+
+    if space == COLOR_SPACE_HSV:
+        hue = native_pixels[:, 0]
+        theta = hue * (2.0 * np.pi / 180.0)
+        cos_h = np.cos(theta) * HUE_CIRCLE_RADIUS * w0
+        sin_h = np.sin(theta) * HUE_CIRCLE_RADIUS * w0
+        sat = native_pixels[:, 1] * w1
+        val = native_pixels[:, 2] * w2
+        return np.column_stack([cos_h, sin_h, sat, val]).astype(np.float32)
+
+    weighted = native_pixels.astype(np.float32).copy()
+    weighted[:, 0] *= w0
+    weighted[:, 1] *= w1
+    weighted[:, 2] *= w2
+    return weighted
+
+
+def _mean_native_pixel(members: np.ndarray, space: str) -> np.ndarray:
+    space = _resolve_color_space(space)
+    if space == COLOR_SPACE_HSV:
+        theta = members[:, 0] * (2.0 * np.pi / 180.0)
+        mean_sin = float(np.mean(np.sin(theta)))
+        mean_cos = float(np.mean(np.cos(theta)))
+        if abs(mean_sin) < 1e-6 and abs(mean_cos) < 1e-6:
+            mean_hue = float(np.mean(members[:, 0]))
+        else:
+            mean_hue = (np.arctan2(mean_sin, mean_cos) / (2.0 * np.pi)) * 180.0
+            if mean_hue < 0:
+                mean_hue += 180.0
+        return np.array(
+            [mean_hue, float(np.mean(members[:, 1])), float(np.mean(members[:, 2]))],
+            dtype=np.float32,
+        )
+    return np.mean(members, axis=0).astype(np.float32)
+
+
+def _cluster_representatives(
+    native_pixels: np.ndarray, labels: np.ndarray, k: int, space: str
+) -> np.ndarray:
+    flat_labels = labels.reshape(-1)
+    representatives = np.zeros((k, 3), dtype=np.float32)
+    has_members = np.zeros(k, dtype=bool)
+    fallback = _mean_native_pixel(native_pixels, space)
+
+    for cluster_id in range(k):
+        members = native_pixels[flat_labels == cluster_id]
+        if len(members) == 0:
+            representatives[cluster_id] = fallback
+            continue
+        has_members[cluster_id] = True
+        representatives[cluster_id] = _mean_native_pixel(members, space)
+
+    if not np.any(has_members):
+        representatives[:] = fallback
+    return representatives
+
+
+def _cluster_palette_from_opaque(
+    opaque_bgr: np.ndarray, config: SnapperConfig, space: str
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Run K-means on opaque pixels; return palette_bgr and per-pixel cluster labels."""
+    native_pixels = bgr_pixels_to_space(opaque_bgr, space)
+    features = _build_cluster_features(native_pixels, space, config.channel_weights)
+
+    k = min(config.k_colors, len(native_pixels))
     criteria = (
         cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER,
         config.max_kmeans_iterations,
         0.01,
     )
-    _, _, centers = cv2.kmeans(
-        opaque_pixels,
+    _, labels, _ = cv2.kmeans(
+        features,
         k,
         None,
         criteria,
         attempts=3,
         flags=cv2.KMEANS_PP_CENTERS,
     )
-    centers = np.clip(centers, 0, 255).astype(np.uint8)
+
+    palette_native = _cluster_representatives(native_pixels, labels, k, space)
+    palette_bgr = palette_native_to_bgr(palette_native, space)
+    return palette_bgr, labels.reshape(-1).astype(int)
+
+
+def compute_palette(image: np.ndarray, config: SnapperConfig) -> np.ndarray:
+    """Compute K-means palette as BGR colors for opaque pixels."""
+    if config.k_colors <= 0 or image is None:
+        return np.zeros((0, 3), dtype=np.uint8)
+
+    bgr = image[:, :, :3]
+    alpha = image[:, :, 3] if image.shape[2] == 4 else None
+    space = _resolve_color_space(config.color_space)
+    opaque_mask = np.ones(bgr.shape[:2], dtype=bool) if alpha is None else alpha > 0
+    opaque_bgr = bgr[opaque_mask]
+
+    if len(opaque_bgr) == 0:
+        return np.zeros((0, 3), dtype=np.uint8)
+
+    palette_bgr, _ = _cluster_palette_from_opaque(opaque_bgr, config, space)
+    return palette_bgr
+
+
+def quantize(image: np.ndarray, config: SnapperConfig) -> np.ndarray:
+    """Reduce opaque pixels to k_colors using K-means in the selected color space."""
+    if config.k_colors <= 0:
+        return image.copy()
+
+    has_alpha = image.shape[2] == 4
+    bgr = image[:, :, :3]
+    alpha = image[:, :, 3] if has_alpha else None
+    space = _resolve_color_space(config.color_space)
+
+    opaque_mask = np.ones(bgr.shape[:2], dtype=bool) if alpha is None else alpha > 0
+    opaque_bgr = bgr[opaque_mask]
+
+    if len(opaque_bgr) == 0:
+        return image.copy()
+
+    palette_bgr, flat_labels = _cluster_palette_from_opaque(opaque_bgr, config, space)
+    quantized_bgr = palette_bgr[flat_labels]
 
     result_bgr = bgr.copy()
-    flat_bgr = result_bgr.reshape(-1, 3).astype(np.float32)
-    flat_opaque = opaque_mask.reshape(-1)
-
-    if np.any(flat_opaque):
-        opaque_flat = flat_bgr[flat_opaque]
-        distances = np.zeros((len(opaque_flat), k), dtype=np.float32)
-        for i, center in enumerate(centers):
-            diff = opaque_flat - center.astype(np.float32)
-            distances[:, i] = np.sum(diff * diff, axis=1)
-        nearest = np.argmin(distances, axis=1)
-        flat_bgr[flat_opaque] = centers[nearest]
-        result_bgr = flat_bgr.reshape(bgr.shape)
+    result_bgr[opaque_mask] = quantized_bgr
 
     if has_alpha:
         result = image.copy()
         result[:, :, :3] = result_bgr
         return result
     return np.dstack((result_bgr, np.full(bgr.shape[:2], 255, dtype=np.uint8)))
+
+
+def quantize_rgb(image: np.ndarray, config: SnapperConfig) -> np.ndarray:
+    """Backward-compatible alias for RGB quantization."""
+    rgb_config = replace(config, color_space=COLOR_SPACE_RGB)
+    return quantize(image, rgb_config)
 
 
 def _to_grayscale(image: np.ndarray) -> np.ndarray:
@@ -474,10 +632,13 @@ def process_pixel_snap(
             config = replace(config, pixel_size_override=None)
 
     working = (
-        quantize_rgb(image, config)
+        quantize(image, config)
         if config.quantize_before_detect
         else image.copy()
     )
+
+    if not config.enable_snapping:
+        return working
 
     profile_x, profile_y = compute_profiles(working)
     step_x_opt = estimate_step_size(profile_x, config)

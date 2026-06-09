@@ -24,13 +24,24 @@ class ConfigManager:
             return value
         return None
     
-    def save_splitter_state(self, state: QByteArray) -> None:
-        """Save splitter widget state"""
-        self.settings.setValue("window/splitter_state", state)
+    def save_main_splitter_state(self, state: QByteArray) -> None:
+        """Save main vertical splitter state (viewers vs operator tabs)"""
+        self.settings.setValue("window/main_splitter", state)
     
-    def load_splitter_state(self) -> Optional[QByteArray]:
-        """Load splitter widget state"""
-        value = self.settings.value("window/splitter_state")
+    def load_main_splitter_state(self) -> Optional[QByteArray]:
+        """Load main vertical splitter state"""
+        value = self.settings.value("window/main_splitter")
+        if isinstance(value, QByteArray):
+            return value
+        return None
+    
+    def save_viewer_splitter_state(self, state: QByteArray) -> None:
+        """Save viewer horizontal splitter state (original vs processed)"""
+        self.settings.setValue("window/viewer_splitter", state)
+    
+    def load_viewer_splitter_state(self) -> Optional[QByteArray]:
+        """Load viewer horizontal splitter state"""
+        value = self.settings.value("window/viewer_splitter")
         if isinstance(value, QByteArray):
             return value
         return None

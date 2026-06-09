@@ -1,5 +1,5 @@
 """
-Color Quantize Operator - Reduce palette using K-means in RGB/LAB/HSV
+Dither Operator - Reduce palette with dithering to smooth color banding
 """
 from typing import Callable, Optional, Tuple
 
@@ -11,18 +11,25 @@ from PyQt6.QtWidgets import (
 )
 
 from core.config_manager import ConfigManager
+from core.dither_algo import (
+    DITHER_ATKINSON,
+    DITHER_FLOYD_STEINBERG,
+    DITHER_NONE,
+    DITHER_ORDERED,
+    dither_to_palette,
+)
 from core.operator_base import OperatorBase
 from core.pixel_snapper_algo import (
     COLOR_SPACE_HSV,
     COLOR_SPACE_LAB,
     COLOR_SPACE_RGB,
     SnapperConfig,
-    quantize,
+    compute_palette,
 )
 
 
-class ColorQuantizeOperator(OperatorBase):
-    """Reduce image colors using K-means in the selected color space."""
+class DitherOperator(OperatorBase):
+    """Reduce colors with dithering to smooth banding after quantization."""
 
     CHANNEL_LABELS = {
         COLOR_SPACE_RGB: ("R:", "G:", "B:"),
@@ -37,6 +44,7 @@ class ColorQuantizeOperator(OperatorBase):
         self._color_space_combo: Optional[QComboBox] = None
         self._num_colors_spin: Optional[QSpinBox] = None
         self._iterations_spin: Optional[QSpinBox] = None
+        self._dither_combo: Optional[QComboBox] = None
         self._weight_sliders: Tuple[Optional[QSlider], Optional[QSlider], Optional[QSlider]] = (
             None, None, None
         )
@@ -49,7 +57,7 @@ class ColorQuantizeOperator(OperatorBase):
 
     @property
     def name(self) -> str:
-        return "Color Quantize"
+        return "Dither"
 
     def get_widget(self) -> QWidget:
         if self._widget is not None:
@@ -69,10 +77,6 @@ class ColorQuantizeOperator(OperatorBase):
         space_label.setFixedWidth(70)
         self._color_space_combo = QComboBox()
         self._color_space_combo.addItems([COLOR_SPACE_RGB, COLOR_SPACE_LAB, COLOR_SPACE_HSV])
-        self._color_space_combo.setToolTip(
-            "Color space used for K-means quantization.\n"
-            "LAB is perceptually uniform; HSV uses cyclic hue."
-        )
         self._color_space_combo.currentIndexChanged.connect(self._on_colorspace_changed)
         space_layout.addWidget(space_label)
         space_layout.addWidget(self._color_space_combo, 1)
@@ -84,10 +88,6 @@ class ColorQuantizeOperator(OperatorBase):
         self._num_colors_spin = QSpinBox()
         self._num_colors_spin.setRange(2, 256)
         self._num_colors_spin.setValue(16)
-        self._num_colors_spin.setToolTip(
-            "Target number of colors in the output palette.\n"
-            "Common values: 8, 16, 32, 64 for pixel art."
-        )
         self._num_colors_spin.valueChanged.connect(self._on_option_changed)
         colors_layout.addWidget(colors_label)
         colors_layout.addWidget(self._num_colors_spin, 1)
@@ -99,20 +99,38 @@ class ColorQuantizeOperator(OperatorBase):
         self._iterations_spin = QSpinBox()
         self._iterations_spin.setRange(1, 50)
         self._iterations_spin.setValue(15)
-        self._iterations_spin.setToolTip(
-            "Number of K-Means iterations.\n"
-            "Higher = better quality but slower."
-        )
         self._iterations_spin.valueChanged.connect(self._on_option_changed)
         iter_layout.addWidget(iter_label)
         iter_layout.addWidget(self._iterations_spin, 1)
         main_layout.addLayout(iter_layout)
 
+        dither_layout = QHBoxLayout()
+        dither_label = QLabel("Dithering:")
+        dither_label.setFixedWidth(70)
+        self._dither_combo = QComboBox()
+        self._dither_combo.addItems([
+            DITHER_NONE,
+            DITHER_FLOYD_STEINBERG,
+            DITHER_ATKINSON,
+            DITHER_ORDERED,
+        ])
+        self._dither_combo.setCurrentText(DITHER_FLOYD_STEINBERG)
+        self._dither_combo.setToolTip(
+            "Error diffusion smooths banding between palette colors.\n"
+            "Floyd-Steinberg: best general smoothing.\n"
+            "Atkinson: softer, less noisy.\n"
+            "Ordered: retro tiled pattern."
+        )
+        self._dither_combo.currentIndexChanged.connect(self._on_option_changed)
+        dither_layout.addWidget(dither_label)
+        dither_layout.addWidget(self._dither_combo, 1)
+        main_layout.addLayout(dither_layout)
+
         layout.addWidget(main_group)
 
         weights_group = QGroupBox("Channel Weights")
         weights_layout = QVBoxLayout(weights_group)
-        weights_desc = QLabel("Adjust importance of each channel during clustering")
+        weights_desc = QLabel("Adjust importance of each channel during palette matching")
         weights_desc.setStyleSheet("color: #666; font-size: 10px;")
         weights_layout.addWidget(weights_desc)
 
@@ -150,6 +168,11 @@ class ColorQuantizeOperator(OperatorBase):
         if not self._color_space_combo:
             return COLOR_SPACE_RGB
         return self._color_space_combo.currentText()
+
+    def _current_dither_method(self) -> str:
+        if not self._dither_combo:
+            return DITHER_FLOYD_STEINBERG
+        return self._dither_combo.currentText()
 
     def _update_channel_labels(self) -> None:
         labels = self.CHANNEL_LABELS.get(
@@ -197,9 +220,19 @@ class ColorQuantizeOperator(OperatorBase):
             return image
 
         try:
-            return quantize(image, self._build_config())
+            config = self._build_config()
+            palette = compute_palette(image, config)
+            if len(palette) == 0:
+                return image.copy()
+            return dither_to_palette(
+                image,
+                palette,
+                self._current_dither_method(),
+                config.color_space,
+                config.channel_weights,
+            )
         except Exception as e:
-            print(f"Color Quantize error: {e}")
+            print(f"Dither error: {e}")
             return image.copy()
 
     def on_parameters_changed(self, callback: Callable[[], None]) -> None:
@@ -212,6 +245,8 @@ class ColorQuantizeOperator(OperatorBase):
             config.save_operator_setting(self.name, "num_colors", self._num_colors_spin.value())
         if self._iterations_spin:
             config.save_operator_setting(self.name, "iterations", self._iterations_spin.value())
+        if self._dither_combo:
+            config.save_operator_setting(self.name, "dither_method", self._dither_combo.currentText())
         for i, slider in enumerate(self._weight_sliders):
             if slider:
                 config.save_operator_setting(self.name, f"weight_{i}", slider.value())
@@ -237,6 +272,12 @@ class ColorQuantizeOperator(OperatorBase):
                 iterations = int(iterations)
             self._iterations_spin.setValue(int(iterations))
 
+        dither_method = config.load_operator_setting(self.name, "dither_method", DITHER_FLOYD_STEINBERG)
+        if self._dither_combo:
+            index = self._dither_combo.findText(str(dither_method))
+            if index >= 0:
+                self._dither_combo.setCurrentIndex(index)
+
         defaults = (33, 33, 34)
         for i, slider in enumerate(self._weight_sliders):
             if not slider:
@@ -257,6 +298,8 @@ class ColorQuantizeOperator(OperatorBase):
             self._num_colors_spin.setValue(16)
         if self._iterations_spin:
             self._iterations_spin.setValue(15)
+        if self._dither_combo:
+            self._dither_combo.setCurrentText(DITHER_FLOYD_STEINBERG)
         defaults = (33, 33, 34)
         for i, slider in enumerate(self._weight_sliders):
             if slider:
